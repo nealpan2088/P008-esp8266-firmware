@@ -1,0 +1,10 @@
+*.o
+*.obj
+*.elf
+.pio/
+.pioenvs/
+.piolibdeps/
+__pycache__/
+.vscode/
+build/
+
