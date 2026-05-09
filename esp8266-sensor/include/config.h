@@ -101,6 +101,25 @@
 #define MQ135_R0 100.0      // 洁净空气中校准的 R₀ 值 (kΩ)，需实际校准
 #endif
 
+// --------------- 火焰探测器 + 蜂鸣器报警 ---------------
+#ifndef USE_FIRE_ALARM
+#define USE_FIRE_ALARM 0     // 0=不启用, 1=启用
+#endif
+#ifndef FIRE_SENSOR_PIN
+#define FIRE_SENSOR_PIN 5    // D1 (GPIO5) — 火焰传感器 DO
+                              // LOW=检测到火焰, HIGH=无火焰
+#endif
+#ifndef BUZZER_PIN
+#define BUZZER_PIN 4         // D2 (GPIO4) — 有源蜂鸣器 I/O
+                              // LOW=响, HIGH=不响（低电平触发）
+#endif
+#ifndef FIRE_ALARM_INTERVAL_MS
+#define FIRE_ALARM_INTERVAL_MS 60000  // 正常心跳间隔 60 秒
+#endif
+#ifndef BUZZER_HOLD_MS
+#define BUZZER_HOLD_MS 30000         // 火焰消失后延迟 30 秒关蜂鸣器
+#endif
+
 // --------------- AP 热点名 ---------------
 #ifndef AP_NAME
 #define AP_NAME "P008-Env-Monitor"

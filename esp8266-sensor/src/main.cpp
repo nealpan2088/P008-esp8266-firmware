@@ -1,12 +1,22 @@
 /**
  * P008 Environment Monitor - ESP8266 Firmware
  * -----------------------------------------------------------
- * Hardware: NodeMCU V3 (ESP8266) + DHT22 / DS18B20 / MQ-135
+ * Hardware: NodeMCU V3 (ESP8266) + DHT22 / DS18B20 / MQ-135 / 火焰探测器
  *
- * 三种模式（通过 build_flags 宏切换）:
+ * 四种模式（通过 build_flags 宏切换）:
  *   BATTERY_MODE=0 (默认): 定风版 loop 方案 —— WiFi 常连，每 N 秒上报一次
  *   BATTERY_MODE=1:        定风电池版 deepSleep 方案 —— 上报完就睡
  *   USE_MQ135=1:           MQ-135 空气质量传感器版，上报 airQuality
+ *   USE_FIRE_ALARM=1:      火焰探测 + 蜂鸣器报警版，上报 fireDetected + alarmActive
+ *
+ * 火焰报警版（USE_FIRE_ALARM=1）:
+ *   传感器: 火焰红外传感器 DO → D1 (GPIO5)，低电平=检测到火焰
+ *   执行器: 有源蜂鸣器 I/O → D2 (GPIO4)，低电平触发
+ *   上报策略:
+ *     - 正常状态: 每 60s 心跳上报
+ *     - 检测到火焰: 立即拉低蜂鸣器 + 立即上报
+ *     - 火焰消失: 延迟 30s 关蜂鸣器 + 立即上报
+ *     - 蜂鸣器状态变化: 同样即时上报
  *
  * 定风版（插电）:
  *   setup:    配 WiFi → 连上后保持在线
@@ -40,6 +50,8 @@
 #include <DallasTemperature.h>
 #elif USE_MQ135
 // MQ-135 直接用 ADC 读，不需要额外库
+#elif USE_FIRE_ALARM
+// 火焰传感器 + 蜂鸣器：纯数字 IO，不需要额外库
 #else
 #include <DHT.h>
 #endif
@@ -54,6 +66,8 @@ HTTPClient http;
 #if USE_DS18B20
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature ds18b20(&oneWire);
+#elif USE_FIRE_ALARM
+// 火焰报警版：不需要 DHT/DS18B20
 #else
 DHT dht(DHT_PIN, DHT_TYPE);
 #endif
@@ -73,6 +87,13 @@ int _rejectCount = 0;                     // 连续被后端拒绝次数（404=�
 #if USE_DOOR_SENSOR
 bool _doorLastState = HIGH;               // 门磁上次状态
 bool _doorChanged = false;                // 门状态是否变化
+#endif
+#if USE_FIRE_ALARM
+bool _lastFireDetected = false;           // 上次火焰检测状态
+bool _fireStateChanged = false;           // 火焰状态是否变化
+bool _buzzerActive = false;               // 当前蜂鸣器是否在响
+unsigned long _buzzerOnTime = 0;          // 蜂鸣器开启的时间戳
+bool _forceReport = false;                // 强制上报（状态变化时）
 #endif
 #define WIFI_TIMEOUT_MS 30000   // WiFi 最久等 30 秒
 #define HTTP_TIMEOUT_MS 5000    // HTTP 最久等 5 秒
@@ -196,6 +217,18 @@ int reportData(float val1, float val2) {
       "\"firmwareVer\":\"" FIRMWARE_VERSION "\",\"channel\":\"" FIRMWARE_CHANNEL "\",\"chipId\":\"%s\",\"sensor\":\"MQ-135\""
       "}}",
       airQualityScore, rawAdc, chipIdHex);
+  }
+#elif USE_FIRE_ALARM
+  // 火焰报警上报：火焰状态 + 蜂鸣器状态
+  {
+    bool fireDetected = (digitalRead(FIRE_SENSOR_PIN) == LOW);
+    snprintf(body, sizeof(body),
+      "{\"fireDetected\":%s,\"alarmActive\":%s,\"sensor\":\"FIRE-ALARM\",\"battery\":0,\"otherData\":{"
+      "\"firmwareVer\":\"" FIRMWARE_VERSION "\",\"channel\":\"" FIRMWARE_CHANNEL "\",\"chipId\":\"%s\",\"deviceType\":\"FIRE\""
+      "}}",
+      fireDetected ? "true" : "false",
+      _buzzerActive ? "true" : "false",
+      chipIdHex);
   }
 #elif BATTERY_MODE
   snprintf(body, sizeof(body),
@@ -335,6 +368,8 @@ void setup() {
   // 传感器
   #if USE_MQ135
     #error "❌ MQ-135 不支持电池版（BATTERY_MODE=1）。MQ-135 需要加热预热，不适合 deepSleep。"
+  #elif USE_FIRE_ALARM
+    #error "❌ 火焰报警不支持电池版（BATTERY_MODE=1）。火焰探测器需常在线，不适合 deepSleep。"
   #else
     dht.begin();
     delay(200);
@@ -402,7 +437,17 @@ void setup() {
   }
 
   // 传感器
-  #if USE_MQ135
+  #if USE_FIRE_ALARM
+    // 火焰传感器：DO 输出数字信号（LOW=有火, HIGH=安全）
+    pinMode(FIRE_SENSOR_PIN, INPUT);
+    // 蜂鸣器：低电平触发，默认拉高（不响）
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, HIGH);
+    _lastFireDetected = (digitalRead(FIRE_SENSOR_PIN) == LOW);
+    _buzzerActive = false;
+    LOG_I("FireAlarm", "Init OK (fire=D1, buzzer=D2)");
+    LOG_I("FireAlarm", "Initial fire state: %s", _lastFireDetected ? "FIRE!" : "SAFE");
+  #elif USE_MQ135
     // MQ-135 不需要额外初始化，ADC 直接可用
     pinMode(MQ135_PIN, INPUT);
     LOG_I("MQ135", "Init OK (pin=%d)", MQ135_PIN);
@@ -443,8 +488,63 @@ void loop() {
     connectWiFi();
   }
 
-  // 到时间才上报
+  // 到时间才上报（火焰报警版：事件驱动 + 定时心跳）
   unsigned long now = millis();
+  #if USE_FIRE_ALARM
+  // --- 火焰报警版 loop ---
+  // 策略：读火焰传感器 → 状态变化立即上报 → 每 60s 心跳保活
+  bool fireNow = (digitalRead(FIRE_SENSOR_PIN) == LOW);
+  _fireStateChanged = (fireNow != _lastFireDetected);
+
+  // 蜂鸣器控制逻辑
+  if (fireNow) {
+    // 检测到火焰 → 立即拉低蜂鸣器（如果没响的话）
+    if (!_buzzerActive) {
+      digitalWrite(BUZZER_PIN, LOW);
+      _buzzerActive = true;
+      _buzzerOnTime = now;
+      LOG_I("FireAlarm", "🔥 FIRE DETECTED! Buzzer ON");
+    }
+  } else {
+    // 无火焰 → 检查是否需要延迟关蜂鸣器
+    if (_buzzerActive) {
+      if (_buzzerOnTime > 0 && (now - _buzzerOnTime) >= BUZZER_HOLD_MS) {
+        digitalWrite(BUZZER_PIN, HIGH);
+        _buzzerActive = false;
+        _buzzerOnTime = 0;
+        LOG_I("FireAlarm", "✅ Fire cleared, Buzzer OFF");
+      }
+    }
+  }
+
+  _lastFireDetected = fireNow;
+
+  // 上报判断：状态变化立即报 OR 到心跳间隔报
+  bool shouldReport = _fireStateChanged || _forceReport;
+  unsigned long elapsedHeartbeat = (now >= _lastReport) ? (now - _lastReport) : (now + (0xFFFFFFFF - _lastReport));
+  if (elapsedHeartbeat >= _reportIntervalMs) {
+    shouldReport = true;
+  }
+
+  if (!shouldReport) {
+    // LED 闪烁指示（有火快速闪，无火慢闪）
+    digitalWrite(LED_BUILTIN, (now / 500) % 2);
+    delay(100);
+    return;
+  }
+
+  _forceReport = false;
+  _lastReport = now;
+
+  // 火焰版上报：val1 和 val2 不用传，reportData 内部读引脚
+  int code = reportData(0, 0);
+
+  // 上报失败 + 状态变化 → 标记强制重试
+  if (code != 200 && _fireStateChanged) {
+    _forceReport = true;
+  }
+
+  #else
   unsigned long elapsed = (now >= _lastReport) ? (now - _lastReport) : (now + (0xFFFFFFFF - _lastReport));
   if (elapsed < _reportIntervalMs) {
     delay(100);
@@ -522,13 +622,13 @@ void loop() {
     if (cache.count == 0) cache.head = 0;
 #endif
   } else if (code > 0 && code != 404) {
-#if !BATTERY_MODE && !USE_MQ135
-    // 服务器其他错误（500 等）→ 缓存（MQ-135 不缓存）
+#if !BATTERY_MODE && !USE_MQ135 && !USE_FIRE_ALARM
+    // 服务器其他错误（500 等）→ 缓存（MQ-135 / 火焰版不缓存）
     cachePush(val1, val2);
 #endif
   } else if (code <= 0) {
-#if !BATTERY_MODE && !USE_MQ135
-    // 网络错误（-1, 超时等）→ 缓存（MQ-135 不缓存）
+#if !BATTERY_MODE && !USE_MQ135 && !USE_FIRE_ALARM
+    // 网络错误（-1, 超时等）→ 缓存（MQ-135 / 火焰版不缓存）
     cachePush(val1, val2);
 #endif
   }

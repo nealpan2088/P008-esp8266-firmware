@@ -7,13 +7,14 @@
 
 ## 配置矩阵
 
-| 代号 | 环境名 | DHT22 | 门磁 | DS18B20 | 电流 | MQ-135 | 供电 | 上报间隔 |
-|------|--------|-------|------|---------|------|--------|------|----------|
-| DHT-插电 | `fw-dht22-plug` | ✅ | - | - | - | - | USB | 60s |
-| DHT门磁-插电 | `fw-dht22-door-plug` | ✅ | ✅ | - | - | - | USB | 60s |
-| DHT-电池 | `fw-dht22-battery` | ✅ | - | - | - | - | 电池 | 5min deepSleep |
-| DS18B20-插电 | `fw-ds18b20-plug` | - | - | ✅ | - | - | USB | 120s |
-| MQ-135-插电 | `fw-mq135-plug` | - | - | - | - | ✅ | USB | 60s |
+| 代号 | 环境名 | DHT22 | 门磁 | DS18B20 | 电流 | MQ-135 | 火焰 | 蜂鸣器 | 供电 | 上报间隔 |
+|------|--------|-------|------|---------|------|--------|------|--------|------|----------|
+| DHT-插电 | `fw-dht22-plug` | ✅ | - | - | - | - | - | - | USB | 60s |
+| DHT门磁-插电 | `fw-dht22-door-plug` | ✅ | ✅ | - | - | - | - | - | USB | 60s |
+| DHT-电池 | `fw-dht22-battery` | ✅ | - | - | - | - | - | - | 电池 | 5min deepSleep |
+| DS18B20-插电 | `fw-ds18b20-plug` | - | - | ✅ | - | - | - | - | USB | 120s |
+| MQ-135-插电 | `fw-mq135-plug` | - | - | - | - | ✅ | - | - | USB | 60s |
+| 火焰报警-插电 | `fw-fire-alarm-plug` | - | - | - | - | - | ✅ | ✅ | USB | 事件驱动+60s心跳 |
 
 ---
 
@@ -326,3 +327,89 @@ SERIAL_TO_SCENE: [
   { prefix: 'RELAY-PL-', scene: 'GENERAL', defaultUsage: 'CUSTOM' },
 ]
 ```
+
+---
+
+## FW-FIRE-ALARM-PLUG（火焰报警-插电）
+
+**用途**：火焰红外探测 + 有源蜂鸣器报警，可用于厨房/库房火灾预警
+
+**创建日期**：2026-05-09
+
+**编译**：
+```bash
+pio run -e fw-fire-alarm-plug -t upload
+```
+
+### ⚠️ 重要
+
+- 火焰传感器 DO 是数字输出（0/1），**不需要 ADC，不需要分压电阻**
+- 蜂鸣器低电平触发，默认为 HIGH（不响），检测到火才拉低
+- 不支持电池版（编译时 `#error` 拦截）
+
+### 接线
+
+| 模块 | → | 引脚 | 备注 |
+|------|---|------|------|
+| 火焰传感器 VCC | → | 3V3 | 工作电压 3.3~5V ✅ |
+| 火焰传感器 GND | → | GND | 共地 |
+| 火焰传感器 DO | → | D1 (GPIO5) | LOW=检测到火焰 |
+| 蜂鸣器模块 VCC | → | 3V3 | 工作电压 3.3~5V ✅ |
+| 蜂鸣器模块 GND | → | GND | 共地 |
+| 蜂鸣器模块 I/O | → | D2 (GPIO4) | 低电平触发 |
+
+### 开关宏
+
+```c
+#define USE_FIRE_ALARM 1       // 启用火焰报警
+#define FIRE_SENSOR_PIN 5      // D1 (GPIO5) — 火焰传感器 DO
+#define BUZZER_PIN 4           // D2 (GPIO4) — 蜂鸣器 I/O
+```
+
+### 工作逻辑
+
+| 场景 | 蜂鸣器 | 上报 |
+|------|--------|------|
+| 正常运行（无火） | 不响 | 每 60s 心跳上报 `fireDetected:false` |
+| 检测到火焰 | 立即响 | 立即上报 `fireDetected:true, alarmActive:true` |
+| 火焰持续存在 | 一直响 | 心跳保持上报（60s 间隔） |
+| 火焰熄灭 | 延迟 30 秒关 | 立即上报 `fireDetected:false, alarmActive:true` |
+| 延迟结束 | 关闭 | 下轮心跳上报 `alarmActive:false` |
+
+### 上报数据格式
+
+```json
+{
+  "fireDetected": true,
+  "alarmActive": true,
+  "sensor": "FIRE-ALARM",
+  "battery": 0,
+  "otherData": {
+    "firmwareVer": "3.5",
+    "chipId": "00FE7394",
+    "deviceType": "FIRE"
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `fireDetected` | bool | true=检测到火焰, false=安全 |
+| `alarmActive` | bool | true=蜂鸣器正在响, false=静音 |
+| `sensor` | string | 固定为 `FIRE-ALARM` |
+
+### 后端映射
+
+```js
+ALLOWED_SERIAL_PREFIXES: ['FIRE-']
+SERIAL_TO_SCENE: [
+  { prefix: 'FIRE-PL-', scene: 'GENERAL', defaultUsage: 'FIRE_ALARM' },
+  { prefix: 'FIRE-',    scene: 'GENERAL', defaultUsage: 'FIRE_ALARM' },
+]
+```
+
+### 场景建议
+
+- **KITCHEN**：厨房火灾监控（推荐结合 DHT22 做温度辅助判断）
+- **WAREHOUSE**：仓库火焰预警
+- **GENERAL**：通用火焰检测
