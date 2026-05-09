@@ -639,4 +639,5 @@ void loop() {
   if (code == 200) {
     fetchConfig();
   }
+#endif  // !USE_FIRE_ALARM — 关闭非火焰版 loop 分支
 }
