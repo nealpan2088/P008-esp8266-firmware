@@ -608,16 +608,17 @@ void loop() {
     // JW01-CO2: 读 UART 解析 CO2/Temp/Humidity
     {
       String line = "";
+      bool gotNewline = false;
       unsigned long co2Start = millis();
-      // 先等待数据到达（Serial1.available() 初始为 0，不能直接 while 读）
-      while (Serial1.available() == 0 && (millis() - co2Start) < 1000) {
+      // 等最多 1200ms 收集数据
+      while ((millis() - co2Start) < 1200) {
+        while (Serial1.available()) {
+          char c = (char)Serial1.read();
+          if (c == '\n' || c == '\r') { gotNewline = true; break; }
+          line += c;
+        }
+        if (gotNewline) break;
         delay(1);
-      }
-      // 读到换行或超时
-      while (Serial1.available() && (millis() - co2Start) < 1500) {
-        char c = Serial1.read();
-        if (c == '\n' || c == '\r') break;
-        line += c;
       }
       line.trim();
       if (line.length() > 0) {
