@@ -119,6 +119,13 @@
 #ifndef BUZZER_HOLD_MS
 #define BUZZER_HOLD_MS 30000         // 火焰消失后延迟 30 秒关蜂鸣器
 #endif
+// 节奏报警参数
+#ifndef BUZZER_ON_MS
+#define BUZZER_ON_MS 200      // 每次响 200ms
+#endif
+#ifndef BUZZER_OFF_MS
+#define BUZZER_OFF_MS 400     // 停 400ms
+#endif
 // 防误判参数 —— 连续 N 次读到 LOW 才判为"有火"
 #ifndef FIRE_CONFIRM_COUNT
 #define FIRE_CONFIRM_COUNT 3    // 连续 3 次确认才触发报警（约 300ms 持续）

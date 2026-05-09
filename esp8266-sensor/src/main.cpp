@@ -93,8 +93,11 @@ bool _lastFireDetected = false;           // 上次火焰检测状态
 bool _fireStateChanged = false;           // 火焰状态是否变化
 bool _buzzerActive = false;               // 当前蜂鸣器是否在响
 unsigned long _buzzerOnTime = 0;          // 蜂鸣器开启的时间戳
+unsigned long _buzzerLastToggle = 0;      // 上次切换蜂鸣器状态的时间
+bool _buzzerState = false;                // 蜂鸣器当前物理状态
 bool _forceReport = false;                // 强制上报（状态变化时）
 int _fireConfirmCount = 0;                // 连续确认计数器
+bool _alarmStateChanged = false;          // 报警状态变化标志
 #endif
 #define WIFI_TIMEOUT_MS 30000   // WiFi 最久等 30 秒
 #define HTTP_TIMEOUT_MS 5000    // HTTP 最久等 5 秒
@@ -512,29 +515,56 @@ void loop() {
 
   // 蜂鸣器控制逻辑
   if (fireNow && !_lastFireDetected) {
-    // 检测到火焰 → 立即拉低蜂鸣器（如果没响的话）
+    // 检测到火焰 → 开始节奏报警
     if (!_buzzerActive) {
-      digitalWrite(BUZZER_PIN, LOW);
       _buzzerActive = true;
       _buzzerOnTime = now;
-      LOG_I("FireAlarm", "🔥 FIRE DETECTED! Buzzer ON");
+      _buzzerState = true;
+      _buzzerLastToggle = now;
+      digitalWrite(BUZZER_PIN, LOW);  // 低电平触发，响
+      _alarmStateChanged = true;
+      LOG_I("FireAlarm", "🔥 FIRE DETECTED! Buzzer ON (rhythmic)");
     }
-  } else {
-    // 无火焰 → 检查是否需要延迟关蜂鸣器
-    if (_buzzerActive) {
-      if (_buzzerOnTime > 0 && (now - _buzzerOnTime) >= BUZZER_HOLD_MS) {
-        digitalWrite(BUZZER_PIN, HIGH);
-        _buzzerActive = false;
-        _buzzerOnTime = 0;
-        LOG_I("FireAlarm", "✅ Fire cleared, Buzzer OFF");
+  }
+
+  // 节奏控制：蜂鸣器激活时按节奏切换
+  if (_buzzerActive) {
+    unsigned long elapsedSinceToggle = now - _buzzerLastToggle;
+    if (_buzzerState) {
+      // 正在响 → 到时间关
+      if (elapsedSinceToggle >= BUZZER_ON_MS) {
+        digitalWrite(BUZZER_PIN, HIGH);  // 不响
+        _buzzerState = false;
+        _buzzerLastToggle = now;
+        _alarmStateChanged = true;
       }
+    } else {
+      // 停着 → 到时间响
+      if (elapsedSinceToggle >= BUZZER_OFF_MS) {
+        digitalWrite(BUZZER_PIN, LOW);   // 响
+        _buzzerState = true;
+        _buzzerLastToggle = now;
+        _alarmStateChanged = true;
+      }
+    }
+  }
+
+  // 火焰消失后延时关蜂鸣器
+  if (!fireNow && _buzzerActive) {
+    if (_buzzerOnTime > 0 && (now - _buzzerOnTime) >= BUZZER_HOLD_MS) {
+      digitalWrite(BUZZER_PIN, HIGH);   // 确保关闭
+      _buzzerActive = false;
+      _buzzerState = false;
+      _buzzerOnTime = 0;
+      _alarmStateChanged = true;
+      LOG_I("FireAlarm", "✅ Fire cleared, Buzzer OFF");
     }
   }
 
   _lastFireDetected = fireNow;
 
-  // 上报判断：状态变化立即报 OR 到心跳间隔报
-  bool shouldReport = _fireStateChanged || _forceReport;
+  // 火焰状态或蜂鸣器状态有变化 → 强制上报
+  bool shouldReport = _fireStateChanged || _alarmStateChanged || _forceReport;
   unsigned long elapsedHeartbeat = (now >= _lastReport) ? (now - _lastReport) : (now + (0xFFFFFFFF - _lastReport));
   if (elapsedHeartbeat >= _reportIntervalMs) {
     shouldReport = true;
@@ -548,6 +578,7 @@ void loop() {
   }
 
   _forceReport = false;
+  _alarmStateChanged = false;
   _lastReport = now;
 
   // 火焰版上报：val1 和 val2 不用传，reportData 内部读引脚
