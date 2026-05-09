@@ -544,7 +544,9 @@ void loop() {
     _forceReport = true;
   }
 
-  #else
+  #endif  // USE_FIRE_ALARM
+
+  #if !USE_FIRE_ALARM
   unsigned long elapsed = (now >= _lastReport) ? (now - _lastReport) : (now + (0xFFFFFFFF - _lastReport));
   if (elapsed < _reportIntervalMs) {
     delay(100);
