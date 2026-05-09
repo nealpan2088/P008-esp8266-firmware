@@ -94,6 +94,7 @@ bool _fireStateChanged = false;           // 火焰状态是否变化
 bool _buzzerActive = false;               // 当前蜂鸣器是否在响
 unsigned long _buzzerOnTime = 0;          // 蜂鸣器开启的时间戳
 bool _forceReport = false;                // 强制上报（状态变化时）
+int _fireConfirmCount = 0;                // 连续确认计数器
 #endif
 #define WIFI_TIMEOUT_MS 30000   // WiFi 最久等 30 秒
 #define HTTP_TIMEOUT_MS 5000    // HTTP 最久等 5 秒
@@ -492,12 +493,25 @@ void loop() {
   unsigned long now = millis();
   #if USE_FIRE_ALARM
   // --- 火焰报警版 loop ---
-  // 策略：读火焰传感器 → 状态变化立即上报 → 每 60s 心跳保活
-  bool fireNow = (digitalRead(FIRE_SENSOR_PIN) == LOW);
+  // 策略：连续确认防误判 → 状态变化立即上报 → 每 60s 心跳保活
+  bool rawFire = (digitalRead(FIRE_SENSOR_PIN) == LOW);
+
+  // 防误判：连续 FIRE_CONFIRM_COUNT 次读到 LOW 才算有火
+  if (rawFire) {
+    if (_fireConfirmCount < FIRE_CONFIRM_COUNT) {
+      _fireConfirmCount++;
+    }
+  } else {
+    if (_fireConfirmCount > 0) {
+      _fireConfirmCount = 0;  // 只要读到一次 HIGH，立即清零
+    }
+  }
+
+  bool fireNow = (_fireConfirmCount >= FIRE_CONFIRM_COUNT);
   _fireStateChanged = (fireNow != _lastFireDetected);
 
   // 蜂鸣器控制逻辑
-  if (fireNow) {
+  if (fireNow && !_lastFireDetected) {
     // 检测到火焰 → 立即拉低蜂鸣器（如果没响的话）
     if (!_buzzerActive) {
       digitalWrite(BUZZER_PIN, LOW);

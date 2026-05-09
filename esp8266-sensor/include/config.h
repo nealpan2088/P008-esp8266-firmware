@@ -119,6 +119,13 @@
 #ifndef BUZZER_HOLD_MS
 #define BUZZER_HOLD_MS 30000         // 火焰消失后延迟 30 秒关蜂鸣器
 #endif
+// 防误判参数 —— 连续 N 次读到 LOW 才判为"有火"
+#ifndef FIRE_CONFIRM_COUNT
+#define FIRE_CONFIRM_COUNT 3    // 连续 3 次确认才触发报警（约 300ms 持续）
+#endif
+#ifndef FIRE_CONFIRM_MS
+#define FIRE_CONFIRM_MS 100     // 每次确认间隔（ms），共约 300ms 持续检测才触发
+#endif
 
 // --------------- AP 热点名 ---------------
 #ifndef AP_NAME
