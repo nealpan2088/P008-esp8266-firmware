@@ -1,40 +1,14 @@
 /**
  * P008 Environment Monitor - ESP8266 Firmware
  * -----------------------------------------------------------
- * Hardware: NodeMCU V3 (ESP8266) + DHT22 / DS18B20 / MQ-135 / 火焰探测器
+ * Hardware: NodeMCU V3 (ESP8266) + DHT22 / DS18B20 / MQ-135 / 火焰探测器 / JW01-CO2
  *
- * 四种模式（通过 build_flags 宏切换）:
- *   BATTERY_MODE=0 (默认): 定风版 loop 方案 —— WiFi 常连，每 N 秒上报一次
- *   BATTERY_MODE=1:        定风电池版 deepSleep 方案 —— 上报完就睡
- *   USE_MQ135=1:           MQ-135 空气质量传感器版，上报 airQuality
- *   USE_FIRE_ALARM=1:      火焰探测 + 蜂鸣器报警版，上报 fireDetected + alarmActive
- *
- * 火焰报警版（USE_FIRE_ALARM=1）:
- *   传感器: 火焰红外传感器 DO → D1 (GPIO5)，低电平=检测到火焰
- *   执行器: 有源蜂鸣器 I/O → D2 (GPIO4)，低电平触发
- *   上报策略:
- *     - 正常状态: 每 60s 心跳上报
- *     - 检测到火焰: 立即拉低蜂鸣器 + 立即上报
- *     - 火焰消失: 延迟 30s 关蜂鸣器 + 立即上报
- *     - 蜂鸣器状态变化: 同样即时上报
- *
- * 定风版（插电）:
- *   setup:    配 WiFi → 连上后保持在线
- *   loop:    每 60 秒读传感器 → HTTPS 上报一次
- *   不做:    deepSleep / MQTT / 多传感器
- *   Pinout:   D1(GPIO5): DHT22 DATA, D4(GPIO2): LED_BUILTIN
- *
- * 定风电池版:
- *   setup:    唤醒 → 读DHT22 → WiFi连网 → HTTPS上报 → deepSleep
- *   loop:    不用（每次启动唤醒一次，上报完就睡）
- *   条件:     ⚠️ GPIO16(D0) 必须接 RST，否则永远不睡
- *   Pinout:   D0(GPIO16): → RST, D1(GPIO5): DHT22 DATA
- *
- * MQ-135 版:
- *   setup:    同定风版，但读 MQ-135 ADC 代替 DHT22
- *   loop:    每 60 秒读 AO（经分压）→ 计算 airQuality 分数 → 上报
- *   条件:     ⚠️ AO 输出 0~5V，8266 ADC 0~3.3V，必须加分压电阻！
- *   Pinout:   MQ-135 AO → 分压电路 → A0
+ * 模式（通过 build_flags 宏切换）:
+ *   BATTERY_MODE=1:         定风电池版 deepSleep 方案
+ *   USE_MQ135=1:            MQ-135 空气质量传感器版，上报 airQuality
+ *   USE_FIRE_ALARM=1:       火焰探测 + 蜂鸣器报警版
+ *   USE_CO2=1:              JW01-CO2 二氧化碳传感器版，上报 co2/temp/humidity
+ *   默认（无宏）:            DHT22 温湿度传感器版
  *
  * 首次配网: 手机连 P008-Env-Monitor 热点 → 192.168.4.1 配WiFi
  * 换WiFi:   按住 FLASH 按钮上电 → 进入配网模式
@@ -45,6 +19,8 @@
 #include <ESP8266HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <WiFiManager.h>
+
+// 传感器头文件——编译时根据宏选择
 #if USE_DS18B20
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -52,6 +28,8 @@
 // MQ-135 直接用 ADC 读，不需要额外库
 #elif USE_FIRE_ALARM
 // 火焰传感器 + 蜂鸣器：纯数字 IO，不需要额外库
+#elif USE_CO2
+// JW01-CO2: UART 通讯，不需要额外库
 #else
 #include <DHT.h>
 #endif
@@ -68,8 +46,15 @@ OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature ds18b20(&oneWire);
 #elif USE_FIRE_ALARM
 // 火焰报警版：不需要 DHT/DS18B20
+#elif USE_CO2
+// CO2 版：不需要 DHT/DS18B20
 #else
 DHT dht(DHT_PIN, DHT_TYPE);
+#endif
+
+// CO2 传感器专用（JW01-CO2），reportData 前由 loop 设置
+#if USE_CO2
+float _co2Value = 0;
 #endif
 
 char deviceSerial[32] = "";
@@ -211,7 +196,16 @@ int reportData(float val1, float val2) {
   snprintf(url, sizeof(url), "%s/devices/%s/data", apiBaseUrl, deviceSerial);
 
   char body[360];
-#if USE_MQ135
+#if USE_CO2
+  // JW01-CO2 上报：CO2 浓度 + 温度 + 湿度
+  {
+    snprintf(body, sizeof(body),
+      "{\"co2\":%.0f,\"temp\":%.1f,\"humidity\":%.1f,\"battery\":0,\"otherData\":{"
+      "\"firmwareVer\":\"" FIRMWARE_VERSION "\",\"channel\":\"" FIRMWARE_CHANNEL "\",\"chipId\":\"%s\",\"sensor\":\"JW01-CO2\""
+      "}}",
+      _co2Value, val1, val2, chipIdHex);
+  }
+#elif USE_MQ135
   // MQ-135 上报：airQuality 综合分数 + 原始 ADC 值
   {
     int rawAdc = (int)val1;             // 原始 ADC 读数 (0~1024)
@@ -374,6 +368,8 @@ void setup() {
     #error "❌ MQ-135 不支持电池版（BATTERY_MODE=1）。MQ-135 需要加热预热，不适合 deepSleep。"
   #elif USE_FIRE_ALARM
     #error "❌ 火焰报警不支持电池版（BATTERY_MODE=1）。火焰探测器需常在线，不适合 deepSleep。"
+  #elif USE_CO2
+    #error "❌ JW01-CO2 不支持电池版（BATTERY_MODE=1）。CO2 传感器需常在线，UART 通讯不适合 deepSleep。"
   #else
     dht.begin();
     delay(200);
@@ -441,7 +437,11 @@ void setup() {
   }
 
   // 传感器
-  #if USE_FIRE_ALARM
+  #if USE_CO2
+    // JW01-CO2：UART 通讯，9600 baud，用 Serial1（RX=GPIO12, TX=GPIO13）
+    Serial1.begin(CO2_SERIAL_BAUD);
+    LOG_I("CO2", "Serial1 started at %d baud (RX=GPIO12, TX=GPIO13)", CO2_SERIAL_BAUD);
+  #elif USE_FIRE_ALARM
     // 火焰传感器：DO 输出数字信号（LOW=有火, HIGH=安全）
     pinMode(FIRE_SENSOR_PIN, INPUT);
     // 蜂鸣器：低电平触发，默认拉高（不响）
@@ -601,9 +601,56 @@ void loop() {
   _lastReport = now;
 
   // 读传感器
-  float val1 = 0;   // temp (DHT/DS18B20) 或 rawAdc (MQ-135)
-  float val2 = 0;   // humidity (DHT)   或 airQualityScore (MQ-135)
-  #if USE_MQ135
+  float val1 = 0;   // temp (DHT/DS18B20/CO2) 或 rawAdc (MQ-135)
+  float val2 = 0;   // humidity (DHT/CO2)  或 airQualityScore (MQ-135)
+  float val3 = 0;   // co2 (JW01-CO2 专用)
+  #if USE_CO2
+    // JW01-CO2: 读 UART 解析 CO2/Temp/Humidity
+    {
+      String line = "";
+      unsigned long co2Start = millis();
+      // 先等待数据到达（Serial1.available() 初始为 0，不能直接 while 读）
+      while (Serial1.available() == 0 && (millis() - co2Start) < 1000) {
+        delay(1);
+      }
+      // 读到换行或超时
+      while (Serial1.available() && (millis() - co2Start) < 1500) {
+        char c = Serial1.read();
+        if (c == '\n' || c == '\r') break;
+        line += c;
+      }
+      line.trim();
+      if (line.length() > 0) {
+        LOG_I("CO2", "RAW: %s", line.c_str());
+        // 格式: ,, 00551ppm ,22.3C, 44.5%,ATMEL,
+        int ppmIdx = line.indexOf("ppm");
+        if (ppmIdx > 0) {
+          int start = ppmIdx - 1;
+          while (start >= 0 && line[start] >= '0' && line[start] <= '9') start--;
+          val3 = line.substring(start + 1, ppmIdx).toInt();  // CO2 ppm
+
+          int cIdx = line.indexOf("C,");
+          if (cIdx < 0) cIdx = line.indexOf("C ");
+          if (cIdx > 0) {
+            start = cIdx - 1;
+            while (start >= 0 && ((line[start] >= '0' && line[start] <= '9') || line[start] == '.')) start--;
+            val1 = line.substring(start + 1, cIdx).toFloat();  // temp
+          }
+
+          int hIdx = line.indexOf("%,");
+          if (hIdx < 0) hIdx = line.indexOf("% ");
+          if (hIdx > 0) {
+            start = hIdx - 1;
+            while (start >= 0 && ((line[start] >= '0' && line[start] <= '9') || line[start] == '.')) start--;
+            val2 = line.substring(start + 1, hIdx).toFloat();  // humidity
+          }
+          LOG_I("CO2", "CO2=%.0fppm Temp=%.1fC Hum=%.1f%%", val3, val1, val2);
+        }
+      } else {
+        LOG_W("CO2", "No data from Serial1 (JW01-CO2)");
+      }
+    }
+  #elif USE_MQ135
     // MQ-135: 读 ADC → 换算成 0~100 空气质量分数
     int rawAdc = analogRead(MQ135_PIN);            // 0~1024
     float adcVoltage = rawAdc * (3.3 / 1024.0);     // 分压后电压
@@ -635,6 +682,11 @@ void loop() {
   } else {
     LOG_I("DHT22", "Temp=%.1fC, Humidity=%.1f%%", val1, val2);
   }
+  #endif
+
+  // CO2 版：设置 co2 全局变量供 reportData 使用
+  #if USE_CO2
+  _co2Value = val3;
   #endif
 
   // 上报

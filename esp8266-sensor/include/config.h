@@ -134,6 +134,14 @@
 #define FIRE_CONFIRM_MS 100     // 每次确认间隔（ms），共约 300ms 持续检测才触发
 #endif
 
+// --------------- JW01-CO2 二氧化碳传感器 ---------------
+#ifndef USE_CO2
+#define USE_CO2 0           // 0=不启用, 1=启用
+#endif
+#ifndef CO2_SERIAL_BAUD
+#define CO2_SERIAL_BAUD 38400  // JW01-CO2 常见波特率（部分模块用 9600）
+#endif
+
 // --------------- AP 热点名 ---------------
 #ifndef AP_NAME
 #define AP_NAME "P008-Env-Monitor"
@@ -151,5 +159,11 @@
 // 编译时检查：忘记设 DEVICE_SERIAL_PREFIX 直接编译失败
 // ============================================================
 #ifndef DEVICE_SERIAL_PREFIX
-  #error "❌ DEVICE_SERIAL_PREFIX 未定义！新设备必须设置正确的序列号前缀。\n例：build_flags = -D DEVICE_SERIAL_PREFIX='\\\"DHT22-PL-\\\"'"
+  #if USE_CO2 && defined(AUTO_SERIAL_PREFIX)
+    // CO2 版用 CO2- 前缀
+  #elif USE_CO2
+    // CO2 版由 platformio.ini 传入
+  #else
+    #error "❌ DEVICE_SERIAL_PREFIX 未定义！新设备必须设置正确的序列号前缀。\n例：build_flags = -D DEVICE_SERIAL_PREFIX='\\\"DHT22-PL-\\\"'"
+  #endif
 #endif
