@@ -139,7 +139,7 @@
 #define USE_CO2 0           // 0=不启用, 1=启用
 #endif
 #ifndef CO2_SERIAL_BAUD
-#define CO2_SERIAL_BAUD 38400  // JW01-CO2 常见波特率（部分模块用 9600）
+#define CO2_SERIAL_BAUD 9600  // JW01-CO2 默认波特率（厂商规格）
 #endif
 
 // --------------- AP 热点名 ---------------
