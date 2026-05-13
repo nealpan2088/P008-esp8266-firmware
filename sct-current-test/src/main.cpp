@@ -196,7 +196,7 @@ int reportData(float current) {
   snprintf(body, sizeof(body),
     "{\"temp\":null,\"humidity\":null,\"battery\":0,\"otherData\":{"
     "\"firmwareVer\":\"" FIRMWARE_VERSION "\",\"channel\":\"" FIRMWARE_CHANNEL "\","
-    "\"chipId\":\"%s\",\"type\":\"current_test\",\"currentA\":%.3f"
+    "\"chipId\":\"%s\",\"type\":\"current_test\",\"current\":%.3f"
     "}}",
     chipIdHex, current);
 

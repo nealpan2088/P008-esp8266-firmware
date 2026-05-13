@@ -3,255 +3,241 @@
 > 固件路径：`hardware/esp8266-sensor/`
 > 编译平台：PlatformIO
 
----
-
-## v2.3.0（2026-05-01 22:50）
+## 雷电版 v1.0.8（2026-05-12）— OTA 远程升级支持 🚀
 
 ### 新增
-- **分级日志系统**：`LOG_E` / `LOG_W` / `LOG_I` / `LOG_D` 四级，通过 `LOG_LEVEL` 宏控制（量产=3/INFO，调试=4/DEBUG）
-- **`log.h` 轻量级日志头文件**：格式化输出 `[级别] [标签      ] 消息` 结构
-- **`log.cpp` 循环缓冲区**（选配）：`LOG_RING_BUF_SIZE` 控制启用，量产默认关闭（0 RAM 占用）
-- **config.h 新增日志配置**：`LOG_LEVEL`(默认3)、`LOG_RING_BUF_SIZE`(默认0)
-
-### 规范
-- 全部 73 处 `Serial.printf/println/print` 替换为分级 `LOG_X` 宏
-- 错误/警告/信息/调试4个级别，日志格式统一：`[I] [WiFi     ] Connected, IP: 192.168.x.x`
-- 去掉未使用变量 `finalKey`，消除编译 warning
-
-## v2.2.0（2026-05-01 22:30）
-
-### 量产加固
-- **硬件看门狗（WDT）**：setup 开头 `ESP.wdtEnable(8000ms)`，防止死机/睡死不醒
-- **`safeDeepSleep()`**：深度睡眠前 `ESP.wdtDisable()`，防止 WDT 在睡眠期误触发复位
-- **`connectWiFiWithRetry()`**：多轮重试（`WIFI_RETRY_MAX=3`），每轮断 WiFi 重连 + WDT 喂狗，全失败进配网
-- **report() HTTP 重试**：POST 失败（负值 httpCode）→ 断 WiFi 重连 → 重试 POST → WiFi 恢复失败则存 SPIFFS 缓存，下次唤醒补发
-- **首次启动标记**：`_isFirstBoot = true`（之前漏设，导致首次设备信息不上报）
+- **OTA 远程升级**（`#if ENABLE_OTA` 宏控制）
+  - `checkOTACommand()` 函数：轮询后端 DeviceCommand 表获取 OTA 指令
+  - 解析 `payload.otaUrl`、`payload.md5`、`payload.version`
+  - 调用 `ArduinoOTA.handle()` 或 `Update.begin()` 执行升级
+  - loop() 每次迭代优先检查 OTA，不受上报间隔影响
+- **云端参数防呆约束**：sct013* 参数在 fetchConfig 时做上限/下限/兜底校验
+  - changeThreshold 下限 0.01A（防止 ADC 噪音触发）
+  - heartbeat 范围 10-86400s
+  - LoadA 范围 0.1-50A
 
 ### 修复
-- **`safeDeepSleep` 前向声明**：定义移到 `startConfigPortal()` 之前，修复编译错误
-- **`httpPostWithRetry` 删除**：调用了不存在的 `httpPost()`，改用 report() 内部重试
-- **WiFi.begin("") 空参数**：改为无参 `WiFi.begin()` 使用 SDK 存储凭据，修复 ESP8266 SDK 崩溃
-- **HTTP 重试失败存缓存**：WiFi 恢复失败时补调 `cacheData()`，不再丢数据
-
-## v2.1.0（2026-05-01）
-
-### 新增
-- **传感器开关体系**：config.h 新增 5 个宏（USE_DS18B20 / USE_DHT22 / USE_SHT30 / USE_CURRENT / USE_DOOR），按场景开关，未启用的传感器代码不编译
-- **SHT30 高精度温湿度支持**：I2C 接口，自动切换门磁引脚到 GPIO12 避免冲突
-- **首次启动上报设备信息**：POST 时带 firmwareVer / model / sensors / capabilities
-- **本地数据缓存**：POST 失败时写入 SPIFFS（FIFO 队列，最多 60 条），下次唤醒先补发
-- **远程指令响应**：从 POST 响应解析 pendingCommands，支持 SET_INTERVAL / SET_THRESHOLD / SET_ALERT_MODE / REBOOT
-- **湿度上报**：POST body 新增 `humidity` 字段（DHT22 / SHT30 场景）
-- **DHT22 测试固件**：独立环境 `nodemcuv3-dht22`，仅启用 DHT22（D4/GPIO2），其他传感器全关
-
-### 修复
-- **条件编译保护**：`readCurrent()` / `readDoor()` 调用处加 `#if USE_CURRENT` / `#if USE_DOOR`，关闭时正常编译
-- **`url` 作用域修复**：`url.length()` 改为 `strlen(paramApiBaseUrl) > 0`，解决跨函数变量失效
-- **`pinMode` 条件保护**：`DOOR_PIN` / `CURRENT_PIN` 的 pinMode 初始化加条件编译
-- **config.h 缺少结尾 `#endif`**：文件末尾补 `#endif /* CONFIG_H */`，修复 `unterminated #ifndef`
-
-### 场景预设搭配方案
-
-| 场景名 | 传感器组合 | 适用 |
-|--------|-----------|------|
-| 🥩 冷库/冷链 | DS18B20 + 电流 + 门磁 | 冷柜内温度、压缩机启停、门状态 |
-| 📦 仓库环境 | SHT30 + 门磁 | 环境温湿度、大门开关 |
-| 🖥️ 机房温控 | SHT30 + 电流 + 门磁 | 环境温湿度、UPS负载、门禁 |
-| 🍳 厨房明厨 | DS18B20 + SHT30 + 电流 + 门磁 | 冷柜温度+环境+设备+门 |
-| 🌱 农业大棚 | SHT30 + 土壤湿度 | 环境温湿度、土壤含水量 |
-| 🚪 门窗安防 | 门磁 + SHT30 | 门状态+环境监控 |
-
-### 引脚规划（全功能模式）
-
-```
-GPIO0(D3)  → DS18B20 数据
-GPIO4(D2)  → SHT30 SDA (I2C)
-GPIO5(D1)  → SHT30 SCL (I2C) / 门磁(NC)
-A0         → SCT-013 电流 或 土壤湿度（二选一）
-GPIO12(D6) → 门磁(NC) —— 启用 SHT30 时自动切换
-```
-
----
-
-## v2.0.0（2026-04-30）
-
-### 新增
-- **智能配置动态化**：POST /data 响应中解析 config（reportInterval、alertInterval、thresholds）
-- **超限加速上报**：数据超限时使用 alertInterval（更频繁），正常时用 reportInterval
-- **WiFiManager 配网**：首次启动或长按 GPIO0 3秒进入配网 AP 页面
-
-### 架构
-- 基于 NodeMCU V3 (ESP8266)
-- 传感器：DS18B20（温度）、SCT-013（电流）、MC-38（门磁）
-- 通信：HTTPS POST JSON
-- 唤醒：Deep sleep 模式
-
----
-
-## v1.0.0（2026-04-20）
-
-### 初始版本
-- 基础框架：WiFi连接 → 传感器读取 → POST上报 → Deep sleep
-- 支持 DS18B20 温度读取
-- 支持 SCT-013 电流读取
-- 支持门磁状态读取
-- SPIFFS 持久化配置
-
-## v2.3.1（2026-05-02 11:30）
-
-### 新增
-- **唤醒后整体超时保护**：`WIFI_TOTAL_TIMEOUT_MS=30000`（30秒），启动后超过30秒还没完成上报就直接深睡眠等下一轮
-- **深睡眠间隔改为60秒**（之前5分钟），提高数据密度
-
-### 修复
-- **解决WiFi长时间卡住导致的数据空洞**：在WiFi重试循环中每次等待后检查总耗时，超时立即放弃
-- HTTP重试后也检查超时，防止`http.POST()`多次重试累积超时
+- **DHT22 分支 OTA 检查阻塞**：`if (elapsed < _reportIntervalMs)` 中的 `delay(100); return` 跳过了 OTA 检查
+  - 修复：在 return 前加 `#if ENABLE_OTA checkOTACommand(); #endif`
+- **后端 429 频率保护兼容**：电流设备 POST /data 最小间隔 3s，执行器 5s
 
 ### 变更
-- 配置新增：`WIFI_TOTAL_TIMEOUT_MS`（默认30000ms）
-
-## v3.0.0（2026-05-02 13:30）
-
-### 重构：彻底精简固件代码
-- **从 v2.3.1 的 1146 行精简到 ~180 行**
-- 代码量减少 84%，逻辑一目了然
-
-### 删除的模块
-- ❌ DS18B20、SHT30 支持（DHT22 专用固件）
-- ❌ 电流互感器 (SCT-013) 检测
-- ❌ 门磁 (MC-38) 检测
-- ❌ MQTT 远程指令通道
-- ❌ HTTPS 支持（统一走 HTTP）
-- ❌ ArduinoJson 依赖（手工拼 JSON 串）
-- ❌ SPIFFS 缓存队列
-- ❌ 多轮 WiFi 重试（3 轮×40 次→一次性 20 次×0.5s=10 秒）
-- ❌ WiFiManager 自定义参数面板（不再需要手动输序列号/密钥）
-
-### 新增/简化
-- ✅ **WiFi：最多等 10 秒(20×500ms)，超时直接进配网**
-- ✅ **HTTP：5 秒超时，一次失败不重试，直接睡**
-- ✅ **软件 10 秒超时宏 + 硬件 15 秒看门狗**—双重保障不死机
-- ✅ 配网热点超时：从 10 分钟缩短到 2 分钟
-- ✅ Flash 按钮 3 秒进入配网模式
-- ✅ 序列号自动生成（DHT22-{chipId}），密钥自动生成
-
-### v3.0.1（2026-05-02 14:20）
-- **修复**：`safeDeepSleep()` → `safeDelayThenRestart()` 
-  - 深睡眠 `ESP.deepSleep()` 需要 GPIO16→RST 短接才能唤醒
-  - 改为 `delay(60s) + ESP.restart()`，不依赖硬件连线
-  - 引脚未短接的板子也能正常循环工作
-
-## v3.1.1（2026-05-02）— 定风版最终定型
-
-### 新增
-- **SHA256 设备密钥**：`SHA256(chipId + HW_SECRET)`，替代明文拼接 `chipId + flashChipId`
-- **云端动态配置**：上报后 GET 拉取 `reportInterval`，实时调整间隔（10～3600秒）
-- **离线缓存（纯 RAM）**：50 条环形队列，上报失败缓存、成功后补发（最多 5 条/次）
-- **停用低功耗模式**：连续 5 次 404 后自动降为每 30 分钟轮询一次
-- **重启后自动恢复**：被启用后下次轮询 Code:200 恢复 60 秒正常上报
-
-### 变更
-- `reportData()` 返回值从 `bool` 改为 `int code`，更精确区分 200/404/500/超时
-- 缓存从 RTC 内存改为纯 RAM（`static struct`），去掉不可靠的 RTC_DATA_ATTR
-- `fetchConfig()` 仅在 Code:200 时调用，减少无用请求
-
-### 配置
-- `config.h` 新增 `HW_SECRET`（密钥盐），移除 `FIRMWARE_VERSION`
-- 新增源码常量：`REJECT_LIMIT=5`、`REJECT_POLL_MS=1800000`（30分钟）
-
----
-
-**此版本为 DHT22 场景最终稳定版，命名"定风"（苏轼《定风波》）。**
-
-### 重构: `safeDelayThenRestart()` → 正统 `loop()` 方案
-- **去掉** `delay(60s) + ESP.restart()` 的 hack 方案
-- **改为** 标准 `loop()`：WiFi 常连，每 60 秒读传感器 → 上报一次
-- WiFi 断连自动重连，不用反复重启
-- 看门狗 30 秒，只防死机不打扰正常流程
-- 新增 `_lastReport` 计时保护，防止 millis() 溢出
-- LED 熄灭表示正常运行中（非上电状态）
-- **代码量**: ~150 行，逻辑一目了然
-
----
-
-**此版本为 DHT22 场景稳定版，建议量产使用。**
-
----
-
-## v3.2（2026-05-02）— 定风电池版
-
-### 新增
-- **定风电池版（deepSleep 版本）**：`#if BATTERY_MODE` 宏切换，单文件 `main.cpp` 同时维护插电/电池两个变体
-- **deepSleep 低功耗模式**：每次唤醒读 DHT22 → WiFi 连网 → POST 上报 → sleep 5 分钟（`DEEP_SLEEP_US=300000000`）
-- **安全 fallback**：`loop()` 内 `delay(60000) + ESP.restart()`，防止 deepSleep 失败无限空转
-- **硬件看门狗配合**：sleep 前 `ESP.wdtDisable()`，setup 开头 `ESP.wdtEnable(8000ms)`
-- **自动序列号+密钥**：`SHA256(chipId + HW_SECRET)`，插电/电池版两套 key 互不冲突
-- **上报标识**：POST body 含 `power:"battery"`，后端可区分电池 vs 插电设备
-
-### 变更
-- 合并 `main-battery.cpp` → `main.cpp`，用 `#if BATTERY_MODE` 统一管理
-- `platformio.ini` 新增 `[env:fw-dht22-battery]`（原 `nodemcuv3-battery`）
-- `setup()` 必须调用 `strncpy(deviceSerial, _autoSerial, ...)` + `strncpy(deviceKey, _autoKey, ...)`（否则 URL 拼出 `/devices//data` → 401）
-
-### 硬件要求
-- **GPIO16(D0) → RST 跳线**：deepSleep 唤醒必需
-- ⚠️ **烧录时必须断开跳线**，否则 `Failed to connect to ESP8266: Timed out waiting for packet header`
-- 烧录完成后重新连接跳线，上电即进入 deepSleep 循环
-
-### 不支持的插电版功能
-- ❌ 云端动态配置（`fetchConfig`）— deepSleep 每次醒来重新初始化
-- ❌ 离线缓存（RAM cache）— sleep 清空 RAM
-- ❌ 停用降频轮询 — sleep 周期固定 5 分钟
-- ❌ 远程指令响应 — 后端处理，固件不解析
-
-
-## v3.3（2026-05-02）— 门磁+命名规范化
-
-### 新增
-- **门磁传感器变体** `fw-dht22-door-plug`：新增 `#if USE_DOOR_SENSOR` 宏
-- **`generateIdentity()` 机制**：自动生成 `{前缀}{chip8位HEX}` 格式序列号
-- **序列号命名新规范**：`{类型}-{供电}-{芯片8位HEX}`（如 `DHT22-PL-00FE7390`）
-- **`config.h` 底部 `#error` 守卫**：忘记设置 `DEVICE_SERIAL_PREFIX` → 编译失败
-
-### 变更
-- **env 命名标准化**：`nodemcuv3-dht22` → `fw-dht22-plug`，`nodemcuv3-battery` → `fw-dht22-battery`
-- **`DEVICE_SERIAL_PREFIX` 宏**：每个 env 的 `build_flags` 指定前缀字符串
-- **`generateIdentity()`** 使用 `DEVICE_SERIAL_PREFIX` 替代硬编码 `DHT22-`
-- **门磁引脚**：GPIO14(D5)，不与 LED(BUILTIN=GPIO2) 冲突
-- **删除 `firmware-variants/` 目录**：8 个旧 config 头文件清理
-- **PlatformIO string 转义**：`build_flags = -D DEVICE_SERIAL_PREFIX=\\\"DHT22-PL-\\\"`
-- **WiFi 配网超时 120s→300s**，WiFi 连接超时 10s→30s
+- **VERSION**：定风版 4.1 / 雷电版 1.0.8 两线独立版本
+- **全量编译验证通过**：fw-dht22-plug, fw-dht22-battery, fw-dht22-door-plug, fw-ds18b20-plug, fw-ds18b20-sct013-plug, fw-mq135-plug, fw-co2-plug, fw-fire-alarm, fw-sct013-plug, fw-relay-plug
+- **生产烧录**：所有在线设备已通过 OTA 升级到 v4.1 定风版
 
 ### 文档
-- `docs/firmware-standards.md`：全新，8 章完整规范体系
-- `docs/firmware-variants.md`：重写，含接线图+编译方法+数据格式
-- `docs/firmware-decisions.md`：架构决策记录
+- `docs/ota-upgrade-plan.md` — OTA 远程升级完整方案
+- `docs/firmware-standards.md` — 增加 OTA 章节
+- `docs/firmware-variants.md` — 配置矩阵增加 OTA 标记
+- `CHANGELOG.md` — 雷电版 v1.0.8 条目
 
-### 固件自适应后端场景（v0.6.6 后端配合）
-- `SERIAL_TO_SCENE` 三层匹配：精确前缀→细分场景 / 中间态→GENERAL / 兜底→GENERAL
-- 添加新变体的三步流程：定前缀→通后端→落文档
+### Git
+- 基亍定风版 v4.1 分支开发
+- 功能开关宏隔离，失效时零开销
 
-### 自动化约束
-| 层级 | 机制 | 状态 |
-|:----:|------|:----:|
-| 🚨 编译失败 | `config.h` `#error` 守卫 | ✅ |
-| ⚠️ 启动警告 | 后端 `checkSerialMappings()` | ✅ |
-| 🔔 提交提示 | `.githooks/pre-commit` | ✅（需 `git config core.hooksPath .githooks`） |
-| 📋 人工兜底 | `firmware-standards.md` 第八章清单 | ✅ |
+### 新增
+- **DS18B20 + SCT-013 复合变体**（`fw-ds18b20-sct013-plug`）
+  - 序列号前缀 `DS18B20-SCT-`
+  - 编译环境：`fw-ds18b20-sct013-plug`（nodemcuv2，4MB flash）
+  - 接线：DS18B20(D3/GPIO0), SCT-013(A0)
+  - 复合版 loop：SCT-013 每 3s 采 200 个样本（10kHz RMS）+ DS18B20 定时读取
+  - 上报 body：`{temp, current, sensor: "DS18B20", otherData: {multiSensor: "ds18b20+sct013", ...}}`
 
-### 硬件设备验证
-- 第三块板 `DHT22-PL-00FE7390`（"有温度的门"）编译烧录成功
-- 序列号 `DHT22-PL-00FE7390` 首次 auto-register 通过
-- 门磁状态 `doorOpen: true/false` 上报正常
-- 后端返回 `reportInterval = 300s`（修复后走 GENERAL 场景 60s）
-- ⚠️ 手动 UPDATE 数据库 repairInterval 60s & sceneType GENERAL
+### 修复
+- **复合板 loop 进入 SCT013-only 分支（根因）**：第 785 行 `#if USE_SCT013` 是独立 `#if`（非 `#elif`），复合板满足 `USE_SCT013=1` 先执行 SCT013-only 分支就结束，永远走不到复合 loop
+  - 修复：`#if USE_SCT013` → `#if USE_SCT013 && !USE_DS18B20`（纯 SCT-013 板不受影响）
+- **复合变体变量名冲突**：`elapsedSinceRms`/`code`/`isRateLimited` 与 SCT013-only 块重名
+  - 修复：全部加 `comp` 前缀（`compRmsElapsed`/`compCode`/`compLimited`）
+- **DS18B20 首次读取 -127°C**：复合版 loop 中第一次失败后 delay(750ms) 重试一次
+- **429 限流退避**：收到 429 后设 `_rateLimitUntil = now + 3000`，后续循环检查退避期跳过上报
+- **宏优先级修复**：复合版 body/初始化 `#elif USE_DS18B20 && USE_SCT013` 前置到 `#elif USE_SCT013` 之前
 
-### 红线注意事项
-- D0→RST 跳线烧录时必须断开
-- 旧格式 `DHT22-` 序列号不再生成新设备（仅兼容已有两台）
-- PlatformIO string 转义必须用 `\\\"` 三层反斜杠
+### 变体编译对照表（新增）
+```
+fw-ds18b20-sct013-plug    → DS18B20 温度探头 + SCT-013 电流互感器（复合板）
+```
+
+### 约束
+- 8266 单板最多 2 个传感器模块
+- 复合变体使用 `&&` 条件覆盖（非 `#elif` 互斥）
+
+### 相关 commit
+- `b3d6fcf` — `fix: 复合板 loop 进入 SCT013-only 分支的根因修复`
+- `d5d0b58` — `fix: 复合版 loop 加 429 限流退避 + DS18B20 重读`
+- `2ad0ee2` — `fix: 复合变体 reportData 和 setup 宏优先级`
+- `1c26532` — `fix: 复合变体 loop 变量名冲突（elapsedSinceRms/code 重定义）`
+- `a92d7ed` — `feat: DS18B20 + SCT-013 复合变体 fw-ds18b20-sct013-plug`
 
 ---
+
+## v4.1（2026-05-12）— OTA 生产稳定版 ✅（当前最新）
+
+### 新增
+- **OTA 远程升级**（`ENABLE_OTA` 宏 + `checkOTACommand()`）🚀
+  - 设备上报成功后顺便检查 OTA 指令，平时代价 = 0（不轮询）
+  - HTTP 固件下载（`OTA_USE_HTTP` 宏，通过 HTTP 下载防 SSL 卡死）
+  - MD5 完整性校验 + 双重保险
+  - 升级成功自动重启，失败回退跑旧版
+
+### 修复
+- **OTA 轮询刷串口**：去掉独立轮询（之前 2s → 10s → 0），改为上报成功后检查
+- **`checkOTACommand` 函数前向声明**：修复编译顺序问题
+- **`reportStatus` 证书验证**：`setInsecure()` → `setTrustAnchors()` + BearSSL::X509List
+- **DHT22 分支 OTA 检查漏执行**：修复 `elapsed < _reportIntervalMs` 内 return 前未调用 `checkOTACommand()`
+
+### 变更
+- **版本号重新锚定**：v4.1 为当前生产稳定版
+- **条件编译隔离**：`#if ENABLE_OTA` — 已有变体完全不受影响
+- **WiFiClientSecure 的 `setInsecure()` 保留**（`reportData`/`fetchConfig` 中），待后续统一改造
+
+### 变体
+- `fw-dht22-door-plug` → DHT22 + 门磁 + 插电（主要 OTA 测试机）
+- **编译验证**：RAM 39.2% / Flash 44.5% ✅
+
+### 文档
+- `firmware-standards.md`：新增 OTA 章节
+- `firmware-variants.md`：OAT 配置矩阵
+- 此变更记录
+
+### Git
+- `192e2ec` — latest fix: 前向声明 + setCACert_P 回退
+- `3f784dc` — refactor: 去掉 OTA 独立轮询 + reportStatus 证书
+- `568e807` — fix: OTA 检查间隔 2s→10s
+
+---
+
+## v4.0（2026-05-12 12:50）— OTA 远程升级验证版
+
+### 新增
+- **OTA 远程升级**开山版：第一次全链路验证从 v3.99 → v4.0 成功
+- 前端固件管理页面 + 设备列表 OTA 触发按钮
+- 后端 Firmware 表 + firmware.routes.js（上传/激活/触发/DeviceCommand）
+
+### 修复
+- `checkOTACommand()` 在 loop() 内每 2s 轮询（后改为 10s 再到 0）
+
+### Git
+- `065c83d` — version bump to 4.0
+
+---
+
+## v3.99（2026-05-12 12:39）— OTA 功能开发中间版
+
+### 新增
+- **OTA 远程升级（调试中）**：ENABLE_OTA 宏 + `checkOTACommand()`
+- 后端：Firmware 模型、上传/激活/OTA 触发 API
+- 前端：固件管理页面、设备 OTA 按钮、在线调试日志
+
+### 调试遗留（后续清理）
+- OTA 轮询每 2s 检查（调试用）
+- `setInsecure()` 在 checkOTACommand 中
+- 临时调试日志
+
+### Git
+- `331e4ad` — version bump to 3.99
+
+
+### 修复
+- **WiFi 断连永久离线**：`loop()` 中 `connectWiFi()` 超时后 `ESP.restart()` 硬重启，防止设备变成死设备
+- **SSL 握手卡死**：HTTPS POST 前喂 WDT（`ESP.wdtFeed()`），防止网络不稳时不返回
+
+### 新增
+- **开租户工具**：前端管理页 `/admin/tenant-creator`，支持一键创建买家账号+PRO 租户+项目+设备绑定
+- **登录页图形验证码**：SVG 数学算式验证码（`3+7=?`），增加安全层
+- **商品展示页**：`/listing-card.html` 挂闲鱼用
+
+### 变更
+- 仅插电版受 WiFi 断连修复影响，电池版（BATTERY_MODE）deepSleep 架构不受影响
+
+
+>
+> 版本管理说明：
+> - **`1.x.x`** — 雷电版系列（SCT-013 电流互感器固件）
+> - **`3.x.x`** — 定风版系列（DHT22/DS18B20/MQ-135/火焰/CO2 固件）
+> - 两线独立版本，互不干扰
+
+---
+
+## 雷电版 v1.0.6（2026-05-11 15:41）
+
+### 修复
+- **保底心跳 + 限流退避**：新增 `_lastOkReport`（仅 200 时更新），`_rateLimitUntil`（429 后 3 秒退避）
+- **云端参数防呆加固**：所有通过 fetchConfig 下发的 SCT 参数加上下限约束（阈值 0.05A~5.0A、心跳 60s~86400s、负载分界 0.1A~20.0A）
+- **干烧保护**：后端改配置时，不合理值被固件兜底，不会导致固件跑飞
+
+### 后端同步变更
+- CURRENT_METER 限流：5s → 10s（配合固件退避）
+- 后端通用异常值入库前过滤（>20A 或负值丢弃）
+
+### 文档
+- 防呆设计规范写入 firmware-standards.md
+
+---
+
+## 雷电版 v1.0.5（2026-05-11 14:28）
+
+### Bug 修复
+- **`*= 1000` 二次污染（根本原因）**：fetchConfig 每次运行时无条件 `*= 1000`，导致心跳间隔从 300s → 300000s → 300000000s... 永不上报
+- **修复**：后端 `GET /config` 和 `POST /data` 响应中用 `??` 始终返回 SCT 边缘参数默认值；固件加 `static bool _sctHeartbeatConverted` 守卫，`*= 1000` 只执行一次
+- **后端电流异常值过滤**：POST /data 入库前检查 `otherData.current` >20A 或 <0 时丢弃
+- **后端通用异常值过滤**：temp >125°C / <-40°C、humidity >100% / <0%、co2 >10000ppm / <0 时丢弃
+
+### Git
+- `73dde0c` + `0019cd5` + `d9ced97` | tag: `firmware-sct013-v1.0.5`
+
+---
+
+## 雷电版 v1.0.4（2026-05-11 13:39）
+
+### Bug 修复
+- **心跳间隔初始值秒→毫秒**：初始值 `SCT013_HEARTBEAT_MEDIUM_MS` 用秒单位（300），fetchConfig 中 `*= 1000` 后变为 300000ms。但不完整——第二次 fetchConfig 仍会再乘 1000。
+- **不完整修复**：v1.0.5 才彻底解决。
+
+### Git
+- `97859cb` | tag: `firmware-sct013-v1.0.4`
+
+---
+
+## 雷电版 v1.0.3（2026-05-11 10:48）
+
+### 修复
+- **自适应阈值收敛死循环**：重置噪声窗口时用绝对清零（`_noiseMin=999, _noiseMax=-999`），而非 `currentRms ± 0.1` 小窗口。有负载时小窗口会被持续撑大，阈值永远无法收敛。
+- **RMS 安全过滤**：`_currentRms > 20.0 || _currentRms < 0.0` 时跳过自学习和上报，防止 GND 虚接导致的异常数据污染。
+- **后端 SCT_CURRENT_MIN 0.08A → 0.2A**：匹配 SCT-013-000（100A:50mA）实际最小可测量
+
+### Git
+- `2450bf9` + `ec30c9c` | tag: `firmware-sct013-v1.0.3`（此标签不含后端改动，后端改动在 v0.10.1 内）
+
+---
+
+## 雷电版 v1.0.2（2026-05-11 09:52）
+
+### 修复
+- **SCT-013 上报字段位置修复**：`current` 从 JSON 顶层移到 `otherData` 内，前端统一从 `otherData.current` 读取
+- **固件规范铁律**：firmware-standards.md 新增「上报字段放对位置」规范
+
+### Git
+- `5d6bb3d` | tag: `firmware-sct013-v1.0.2`
+
+---
+
+## v3.5（2026-05-10）— CO₂ 传感器 + 编译修复
+
+### 新增
+- **CO₂ 传感器变体 `fw-co2-plug`**：JW01-CO2 UART 模块，Serial1（RX=GPIO12, TX=GPIO13, 9600bps）
+- **`config.h` 新增宏**：`USE_CO2`、`CO2_SERIAL_BAUD=9600`
+- **`_co2Value` 全局变量**：在 `reportData()` 中输出 `co2` 字段
+- **CO₂ 数据零值上报**：传感器数据不可用时仍上报 0 值以维持云端连接
+
+### 修复
+- **`fw-dht22-plug` 编译冲突**：添加 `src_filter = +<*> -<main-battery.cpp>` 排除电池版主文件
+- **`fw-dht22-door-plug` 编译冲突**：同上
+- **CO₂ 波特率修正**：从 38400 改为 9600（JW01-CO2 模块实际规格）
+
+### 变更
+- 平台版本更新至 v0.9.3
+- 后端新增 CO₂ 报警字段支持
 
 ## v3.4（2026-05-04）— MQ-135 空气质量传感器
 

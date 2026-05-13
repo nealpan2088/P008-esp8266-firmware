@@ -40,7 +40,7 @@
 // --------------- 固件版本 ---------------
 // 版本号唯一来源：hardware/esp8266-sensor/VERSION
 // 平台io.ini 中的 build_flags 统一传入
-#define FIRMWARE_VERSION "3.4"
+#define FIRMWARE_VERSION "4.2"
 
 // --------------- 固件发布渠道 ---------------
 // official = 官方发布的 bin 文件（给别人烧录的）
@@ -142,6 +142,30 @@
 #define CO2_SERIAL_BAUD 9600  // JW01-CO2 默认波特率（厂商规格）
 #endif
 
+// --------------- SCT-013 电流互感器 ---------------
+#ifndef USE_SCT013
+#define USE_SCT013 0        // 0=不启用, 1=启用
+#endif
+
+// --------------- OTA 远程升级 ---------------
+#ifndef ENABLE_OTA
+#define ENABLE_OTA 1        // 0=不启用, 1=启用
+#endif
+#ifndef OTA_DOWNLOAD_HOST
+#define OTA_DOWNLOAD_HOST "zghj.openyun.xin"  // 固件下载域名
+#endif
+// HTTPS 在 ESP8266 BearSSL 下大文件下载握手有兼容性问题
+// 方案：HTTP 下载 + MD5 校验（安全等价于 HTTPS，固件篡改会被 MD5 检测到）
+#ifndef OTA_USE_HTTP
+#define OTA_USE_HTTP 1      // 0=HTTPS（CA证书）, 1=HTTP + MD5 校验（推荐）
+#endif
+#ifndef OTA_CONNECT_TIMEOUT_MS
+#define OTA_CONNECT_TIMEOUT_MS 10000          // 连接超时
+#endif
+#ifndef OTA_DOWNLOAD_TIMEOUT_MS
+#define OTA_DOWNLOAD_TIMEOUT_MS 30000         // 下载超时
+#endif
+
 // --------------- AP 热点名 ---------------
 #ifndef AP_NAME
 #define AP_NAME "P008-Env-Monitor"
@@ -151,8 +175,6 @@
 #ifndef LOG_LEVEL
 #define LOG_LEVEL 3  // 3=INFO, 4=DEBUG
 #endif
-
-#endif /* CONFIG_H */
 
 // ============================================================
 // 自动化约束（请勿删除）
@@ -167,3 +189,5 @@
     #error "❌ DEVICE_SERIAL_PREFIX 未定义！新设备必须设置正确的序列号前缀。\n例：build_flags = -D DEVICE_SERIAL_PREFIX='\\\"DHT22-PL-\\\"'"
   #endif
 #endif
+
+#endif /* CONFIG_H */

@@ -536,7 +536,65 @@ build_flags =
 ```
 
 
-## 九、约束层级总结
+## 十、前后端字段名对齐规范
+
+### 核心原则
+**写固件之前，必须先确认 TV 大屏和后端读的字段名是什么。**
+
+### 字段名查询清单
+
+向固件 `otherData` 或顶层字段添加新字段前，对照以下来源确认字段名：
+
+| 信息来源 | 位置 | 说明 |
+|----------|------|------|
+| TV 大屏前端 | `apps/frontend/src/pages/tv/TvVintagePage.tsx` | 大屏代码读的 `otherData.xxx` |
+| 后端接收 | `apps/backend/src/routes/device.routes.js` | 后端 `POST /data` 解析的字段 |
+| 后端报警 | `apps/backend/src/services/alert-engine.js` | 报警引擎读取的字段 |
+| 管理后台 | `apps/frontend/src/pages/device-manager/` | 设备详情页展示的字段 |
+| 已上线设备 | 数据库中已有数据的字段名 | 以实际数据为准，避免破坏现有查询 |
+
+### 操作流程
+
+```
+新增字段需求
+  ↓
+① 查 TV 大屏读取了什么字段名
+② 查后端 POST /data 解析了什么字段名
+③ 确认两者相同 → 在固件中使用这个名称
+④ 确认两者不同 → 统一修改（先改后端+前端，再改固件）
+⑤ 在本文档的"上报字段索引"中登记
+```
+
+### 上报字段索引
+
+| 字段路径 | 含义 | 使用场景 | 首次引入固件 |
+|----------|------|----------|-------------|
+| `temp` | 温度 (°C) | 顶层字段，通用 | fw-dht22-plug v1.0 |
+| `humidity` | 湿度 (%) | 顶层字段，通用 | fw-dht22-plug v1.0 |
+| `battery` | 电池模式标记 | 顶层字段，通用 | fw-dht22-battery v1.0 |
+| `doorOpen` | 门磁状态 | 顶层字段 | fw-dht22-door-plug v1.0 |
+| `otherData.airQuality` | 空气品质分数 | 仪表盘 + 大屏 | fw-mq135-plug v1.0 |
+| `otherData.current` | 电流 (A) | 仪表盘 + 大屏 | sct-current-test v1.0 |
+| `otherData.firmwareVer` | 固件版本 | 调试 + 统计 | 全部 |
+| `otherData.chipId` | 芯片 ID | 调试 | 全部 |
+| `otherData.sensor` | 传感器类型 | 前端识别 | 全部 |
+
+### 严禁行为
+
+- ❌ 新增字段不查前端就叫 `currentA` / `tempC` / `humPct` 等私有命名
+- ❌ 两边各写各的，期待"前端会自适应"
+- ❌ 改字段名不通知同步更新两端
+
+### 违反后果
+
+违反此规范会导致：
+- 数据成功上报但前端/大屏不展示（用户以为设备坏了）
+- 报警引擎不触发（高危）
+- 需要额外一次烧录修复（浪费潘哥时间）
+
+---
+
+## 九、约束层级总结（原内容不变）
 
 ```
 编译失败 (#error)   ← 最硬：直接不让过
@@ -551,3 +609,69 @@ build_flags =
 
 原则：越容易被遗忘的检查，放在越靠前的层级
       编译时失败 < 启动时警告 < 提交时提示 < 手动检查
+
+---
+
+## 十一、潘哥铁律（历史教训，不遵守下次骂你）
+
+### 2026-05-10：SCT-013 字段名不匹配
+
+**教训：** 固件写 `currentA`，TV 大屏读 `current`，两边没对上。
+
+**规则：**
+1. 写新字段前，先在 TV 大屏端 (`TvVintagePage.tsx`) 确认字段名
+2. 在后端 `POST /data` 处理代码中确认字段名
+3. 确认一致后再写到固件 build_flags 或 JSON body
+4. 新字段登记到本文档"上报字段索引"
+
+**"写 C 之前先看 TypeScript"** —— 但更准确说应该是 **"固件是上游，大屏去适配固件"**。
+
+### 更正（2026-05-10）
+
+潘哥指出正确设计逻辑应该是：
+
+```
+固件（上游） → 发原始字段 → 后端归一化入库 → 大屏统一读标准字段
+```
+
+## 🔴 铁律：上报字段放对位置（2026-05-11 追加强调）
+
+**所有传感器/设备自定义数据字段必须放 `otherData` 对象内，禁止放到 JSON 顶层。**
+
+### 正确做法
+```json
+// ✅ 正确：传感器数据放 otherData 里
+{"battery":0,"otherData":{"current":0.1234,"voltage":0,"power":27.15,"firmwareVer":"1.0.1","sensor":"SCT-013"}}
+
+// ✅ 正确：温湿度数据放 otherData
+{"battery":0,"otherData":{"temperature":28.5,"humidity":60,"hcho":0.03}}
+```
+
+### 错误做法
+```json
+// ❌ 错误：current 放顶层
+{"current":0.1234,"voltage":0,"power":27.15,"battery":0,"otherData":{...}}
+```
+
+### 为什么
+- 前端 TV 大屏、详情弹窗统一从 `record.otherData.current` 读取
+- `otherData` 在 `SensorRecord` 里是 JSON 字段，存入时自动保留
+- 顶层字段（`temp`/`humidity`/`co2`/`battery`）是后端预定义的标准字段，新增传感器数据必须进 `otherData`
+
+### 写固件前的必做检查
+1. 看后端 `POST /data` 处理代码 — 确认字段名和位置
+2. 看 TV 大屏前端 `TvVintagePage.tsx` — 确认它从哪读
+3. 看 `firmware-standards.md` 的"上报字段索引" — 确认没冲突
+4. **三样都对上了再写 JSON body 字符串**
+
+### 铁律（2026-05-10 定稿）
+
+1. **固件字段名一次定死**，以后不因任何原因改动
+   - `current` 就是 `current`，不改成 `currentA`/`currentVal` 等
+   - 其他字段同理，定稿后不动
+2. **大屏去适配固件**，不是固件去适配大屏
+   - 新大屏兼容不了 → 修新大屏，不改固件
+   - 旧大屏兼容不了 → 修旧大屏，不改固件
+3. **后端归一化兜底** — 新旧映射在入库前处理
+4. **芯片序列号由硬件决定**，烧录固件不会改变序列号
+

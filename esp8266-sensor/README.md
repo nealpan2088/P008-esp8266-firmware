@@ -1,84 +1,142 @@
-# P008 睿云智感 固件文档索引
+# ESP8266 传感器固件 — 睿云智感
 
-## 固件概述
+P008 环境监测平台的物联网终端固件。
 
-ESP8266 传感器固件（定风版），支持多变体编译：
+---
 
-| 变体 | 环境名 | 传感器 | 供电 | 序列号示例 |
-|:----:|--------|--------|:----:|-----------|
-| DHT22 插电版 | `fw-dht22-plug` | DHT22 温湿度 | USB | `DHT22-PL-00FE7390` |
-| DHT22 电池版 | `fw-dht22-battery` | DHT22 温湿度 | 锂电池 | `DHT22-9805C123` |
-| DHT22 门磁版 | `fw-dht22-door-plug` | DHT22 + 门磁 | USB | `DHT22-PL-00FE7390` |
-| **DS18B20 防水** | `fw-ds18b20-plug` | **DS18B20 温度** | USB | **`DS18B20-PL-00C370ED`** |
-| **MQ-135 空气** | `fw-mq135-plug` | **MQ-135 空气质量** | USB | **`AIR-PL-xxxx`** |
+## 概述
 
-## 版本
+ESP8266 (NodeMCU V3, ESP-12E, 4MB Flash) 物联网传感器固件。
+支持多种传感器变体编译，单源文件多变体编译（`#if` 宏隔离）。
+上报数据至「睿云智感」云平台（https://zghj.openyun.xin）。
 
-当前固件版本：**v3.4**
+## 当前状态
 
-```
-hardware/esp8266-sensor/VERSION
-```
+| 项目 | 值 |
+|------|-----|
+| 当前定风版 | **v4.1**（2026-05-12，OTA 生产稳定版 ✅） |
+| 当前雷电版 | **v1.0.8**（2026-05-12，SCT-013 电流 + 复合版 ✅） |
+| 编译框架 | PlatformIO（单 `platformio.ini`，16 个编译环境） |
+| OTA 支持 | ✅ 已上线（`ENABLE_OTA` 宏，v4.1 起全部支持） |
+| 在线设备 | 6 台（生产环境） |
 
-查看 [CHANGELOG](../CHANGELOG.md)
-
-## 文档列表
-
-| 文档 | 说明 |
-|------|------|
-| [README](./docs/README.md) | 固件文档入口 |
-| [定风版规范](./docs/firmware-standards.md) | 编译隔离 / 命名规范 / 代码组织 |
-| [固件变体清单](./docs/firmware-variants.md) | 所有变体的配置详细清单 |
-| [场景预设](./docs/SCENE_PRESETS.md) | 场景配置 + 云端自适应 |
-| [序列号到场景映射](./docs/SERIAL_TO_SCENE.md) | 前缀匹配规则 |
-| [DS18B20 设计文档](./docs/fw-ds18b20-plug-design.md) | DS18B20 防水传感器设计 |
-| [Windows 烧录指南](./docs/fw-ds18b20-windows-guide.md) | 在 Windows 下烧录 DS18B20 固件 |
-| [批量烧录](./docs/bulk-flashing.md) | 批量烧录方案 |
-| [生产加固](./docs/production-hardening.md) | 生产环境安全加固 |
-| [技术决策](./docs/firmware-decisions.md) | 历史技术决策记录 |
-
-## 固件结构
+## 目录结构
 
 ```
 hardware/esp8266-sensor/
+├── src/                    # 固件源码
+│   ├── main.cpp            # 主程序入口（所有变体共享）
+│   ├── config.h            # 全局编译配置（版本号、OTA 开关等）
+│   ├── ConfigManager.h     # 云端配置拉取（reportInterval 等）
+│   ├── Secrets.h           # 设备身份（序列号、API Key）
+│   ├── Sensors.h/.cpp      # 传感器抽象基类
+│   ├── DHT22Sensor.h/.cpp
+│   ├── DS18B20Sensor.h/.cpp
+│   ├── MQ135Sensor.h/.cpp
+│   ├── CO2Sensor.h/.cpp
+│   ├── FireAlarmSensor.h/.cpp
+│   └── CurrentSensor.h/.cpp
 ├── include/
-│   ├── config.h           # 全局配置 + 编译宏
-│   ├── dht_scene_presets.h # 场景预设表
-│   └── serial_to_scene.h  # 序列号→场景映射（备用）
-├── src/
-│   ├── main.cpp           # 主程序（#if 隔离所有变体）
-│   └── OneWire.cpp        # DS18B20 读取库
-├── lib/
-│   ├── ConfigManager/     # 远程配置管理库
-│   └── SceneManager/      # 场景管理库
-├── test/                  # 单元测试
-├── platformio.ini         # 编译环境配置
-├── VERSION                # 固件版本号
-└── CHANGELOG.md           # 固件变更记录
+│   └── config-*.h          # 各变体专用编译配置（引脚定义等）
+├── docs/
+│   ├── firmware-standards.md   # 固件开发规范（铁律）
+│   ├── firmware-variants.md    # 变体对应表 + 接线图（全矩阵）
+│   ├── firmware-overview.md    # 固件架构总览
+│   └── bulk-flashing.md        # 批量烧录方案
+├── platformio.ini          # PlatformIO 编译环境定义（16 个 env）
+├── CHANGELOG.md            # 完整版本变更历史
+├── VERSION                 # 版本对照表（定风版 + 雷电版）
+├── VERSION.md              # 版本管理说明
+└── README.md               # 本文档
 ```
 
-## 编译与烧录
+## 编译变体矩阵
+
+| 变体名 | 传感器 | 供电 | 序列号前缀 | 用途 |
+|--------|--------|------|-----------|------|
+| `fw-dht22-plug` | DHT22 | 插电 | `DHT22-PL-` | 温湿度监测 |
+| `fw-dht22-battery` | DHT22 | 电池 + deepSleep | `DHT22-BT-` | 温湿度监测（低功耗） |
+| `fw-dht22-door-plug` | DHT22 + 门磁 | 插电 | `DHT22-PL-` | 温湿度 + 开关门监测 |
+| `fw-ds18b20-plug` | DS18B20 | 插电 | `DS18B20-PL-` | 单温度探头 |
+| `fw-mq135-plug` | MQ-135 | 插电 | `MQ135-PL-` | 空气质量 |
+| `fw-co2-plug` | JW01-CO2 | 插电 | `CO2-PL-` | CO₂ 浓度监测 |
+| `fw-fire-alarm-plug` | 火焰传感器 | 插电 | `FIRE-PL-` | 火焰报警 |
+| `fw-sct013-plug` | SCT-013 | 插电 | `SCT-PL-` | 交流电流监测 |
+| `fw-ds18b20-sct013-plug` | DS18B20 + SCT-013 | 插电 | `DS18B20-SCT-` | 温度 + 电流复合监测 |
+
+## OTA 远程升级
+
+v4.1 起支持 OTA 远程固件升级。
+
+**流程**：
+1. 管理后台 → 上传固件 → 激活
+2. 点击设备 OTA 升级 → 后端写入 DeviceCommand
+3. 设备下次上报后拉取命令 → HTTP 下载固件 → 校验 MD5 → 重启运行新版
+
+**条件**：需在 `config.h` 中启用 `#define ENABLE_OTA 1`（默认已打开）
+
+## 快速编译
 
 ```bash
-# 安装依赖
-pio pkg install
+# Windows PowerShell（使用完整路径）
+& $env:USERPROFILE\.platformio\penv\Scripts\platformio.exe run -e fw-dht22-plug
 
-# 编译指定环境
-pio run -e fw-dht22-plug
-
-# 烧录
-pio run -e fw-dht22-plug -t upload
-
-# 查看串口输出
-pio device monitor
+# 带烧录
+& $env:USERPROFILE\.platformio\penv\Scripts\platformio.exe run -e fw-dht22-plug -t upload --upload-port COM3
 ```
 
-> Windows 用户请参考 [Windows 烧录指南](./docs/fw-ds18b20-windows-guide.md)
+## 序列号规范
 
-## 架构原则
+格式：`{传感器类型}-{供电方式}-{芯片MAC后8位HEX}`
 
-1. **编译时决策**：所有变体差异通过 `#if` 宏在编译时决定，无运行时分支
-2. **单文件入口**：`main.cpp` 是唯一入口，通过 `#if` 包含不同逻辑
-3. **序列号即身份**：`DEVICE_SERIAL_PREFIX` 定义设备类型，后端据此自动分配场景
-4. **版本文件**：`VERSION` 文件是固件版本唯一来源，`main.cpp` 在启动时读取
-5. **`config.h` 守卫**：末尾的 `#error` 确保必须定义 `DEVICE_SERIAL_PREFIX`
+示例：`DHT22-PL-00FE7390`
+
+| 类型 | 编码 | 供电 | 编码 |
+|------|------|------|------|
+| DHT22 | `DHT22` | 插电（USB） | `PL` |
+| DS18B20 | `DS18B20` | 电池（deepSleep） | `BT` |
+| SCT-013 | `SCT` |  |  |
+| DS18B20+SCT-013 | `DS18B20-SCT` |  |  |
+
+## 上报数据格式
+
+```json
+{
+  "temp": 26.1,
+  "humidity": 67.2,
+  "battery": 4.2,
+  "otherData": {
+    "deviceType": "TEMP_HUMID",
+    "sensors": ["temp", "humid"],
+    "firmwareVer": "4.1",
+    "chipId": "00FE7390"
+  }
+}
+```
+
+**铁律**：
+- 传感器自定义数据必须放 `otherData` 内
+- `battery`、`temp`、`humidity`、`co2` 放顶层（后端预定义字段）
+- 其他所有数据（current、doorOpen、airQuality 等）放 `otherData`
+- 字段名一次定死不改，大屏适配固件（非固件适配大屏）
+
+## 版本系列
+
+| 系列 | 版本号格式 | 覆盖设备 |
+|------|-----------|---------|
+| **定风版** | x.x.x | DHT22、DS18B20、MQ-135、火焰、CO₂ |
+| **雷电版** | 1.x.x | SCT-013 电流互感器、DS18B20+SCT-013 复合版 |
+
+## 文档导航
+
+- [固件开发规范](docs/firmware-standards.md) — 命名规则、代码风格、#if 隔离铁律
+- [固件变体列表](docs/firmware-variants.md) — 全量变体矩阵 + 接线图 + 上报格式
+- [固件架构总览](docs/firmware-overview.md) — 代码架构、批次流程、状态机
+- [批量烧录方案](docs/bulk-flashing.md) — 产线烧录流程
+- [后端序列号映射](apps/backend/src/config/constants.js) — `SERIAL_TO_SCENE`、`TV_CONFIG_MAP`
+
+## 配套文档
+
+- 后端 API 文档：[apps/backend/src/routes/](apps/backend/src/routes/)
+- TV 大屏渲染逻辑：[apps/frontend/src/pages/tv/TvVintagePage.tsx](apps/frontend/src/pages/tv/TvVintagePage.tsx)
+- 后端 TV 配置映射：[apps/backend/src/config/constants.js -> `TV_CONFIG_MAP`](apps/backend/src/config/constants.js)

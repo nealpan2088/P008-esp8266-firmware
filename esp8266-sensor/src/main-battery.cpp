@@ -121,12 +121,14 @@ int reportData(float temp, float humidity) {
   char url[256];
   snprintf(url, sizeof(url), "%s/devices/%s/data", API_BASE_URL, deviceSerial);
 
+  int rssi = WiFi.RSSI();
+
   char body[256];
   snprintf(body, sizeof(body),
     "{\"temp\":%.1f,\"humidity\":%.1f,\"battery\":1,\"otherData\":{"
-    "\"firmwareVer\":\"3.2\",\"chipId\":\"%s\",\"power\":\"battery\""
+    "\"firmwareVer\":\"3.2\",\"chipId\":\"%s\",\"power\":\"battery\",\"rssi\":%d"
     "}}",
-    temp, humidity, chipIdHex);
+    temp, humidity, chipIdHex, rssi);
 
   wifiClientSecure.setInsecure();
   http.begin(wifiClientSecure, url);
